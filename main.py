@@ -1,13 +1,14 @@
 # import time
 import sys
+
+import pandas as pd
+import panel as pn
 import requests
+from bokeh.models.widgets.tables import HTMLTemplateFormatter
 from bs4 import BeautifulSoup
 
 # from datetime import timedelta
 
-import panel as pn
-import pandas as pd
-from bokeh.models.widgets.tables import HTMLTemplateFormatter
 
 # from prefect import flow, task
 # from prefect.tasks import task_input_hash
@@ -202,7 +203,8 @@ def initialize_widgets():
 
 tabulator, download_column, toggle, numbers, svg = initialize_widgets()
 sidebar_column = pn.Column(
-    pn.WidgetBox("""
+    pn.WidgetBox(
+        """
     # 👋 Welcome!
 
     The app is fetching stats from all publicly available Prefect repositories listed on the
