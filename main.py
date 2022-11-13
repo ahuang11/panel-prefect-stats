@@ -27,12 +27,12 @@ CSS = """
 """
 MAX_WIDTH = 1000
 DAY_IN_SECONDS = 3600 * 24
-CACHE_KWARGS = dict(ttl=DAY_IN_SECONDS, max_items=1, policy="FIFO")
+CACHE_KWARGS = dict(ttl=DAY_IN_SECONDS, policy="FIFO")
 COLUMNS = ["📕 Org Repo", "⭐ Stars", "⬇ Downloads", "👀 Watching"]
 if sys.platform != "emscripten":
     CACHE_KWARGS["to_disk"] = True
 
-pn.extension("tabulator", sizing_mode="stretch_width")
+pn.extension("tabulator", sizing_mode="stretch_width", notifications=True)
 pn.config.raw_css.append(CSS)
 
 
@@ -41,18 +41,19 @@ pn.config.raw_css.append(CSS)
 def parse_catalog():
     catalog_resp = requests.get("https://docs.prefect.io/collections/catalog/")
     catalog_soup = BeautifulSoup(catalog_resp.text, "html.parser")
-    repo_api_urls = {
+    repo_api_urls = sorted({
         url["href"]
         .replace("https://", "https://api.github.com/repos/")
         .replace(".github.io", "")
         .rstrip("/")
         for url in catalog_soup.find_all("a", href=True)
         if ".io/prefect-" in url["href"]
-    }
+    })
     return repo_api_urls
 
 
 # @task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
+@pn.cache(**CACHE_KWARGS)
 def get_stats(repo_api_url):
     print(repo_api_url)
     repo_api_data = requests.get(repo_api_url).json()
@@ -77,31 +78,30 @@ def get_stats(repo_api_url):
     return repo_df
 
 
-@pn.cache(**CACHE_KWARGS)
-def get_repo_dfs():
-    repo_api_urls = parse_catalog()
-
-    repo_dfs = []
-    for repo_api_url in repo_api_urls:
-        repo_df = get_stats(repo_api_url)
-        repo_dfs.append(repo_df)
-    return repo_dfs
-
-
-def update_table(repo_dfs):
+def update_table(repo_df):
     base_df = tabulator.value
-    all_df = pd.concat([base_df.iloc[[0]], *repo_dfs]).sort_values(
+    joined_df = pd.concat([base_df, repo_df]).sort_values(
         COLUMNS[1:], ascending=False
     )
-    tabulator.value = all_df
+    tabulator.value = joined_df
 
 
 # @flow(persist_result=True)
 def load_data():
     sidebar_column.loading = True
-    repo_dfs = get_repo_dfs()
-    update_table(repo_dfs)
-    sidebar_column.loading = False
+    try:
+        if catalog_repos[0] is None:
+            catalog_repos.pop(-1)
+            catalog_repos.extend(sorted(parse_catalog()))
+
+        if len(catalog_repos) > 0:
+            repo_api_url = catalog_repos.pop(-1)
+            repo_df = get_stats(repo_api_url)
+            update_table(repo_df)
+        else:
+            periodic_updates.stop()
+    finally:
+        sidebar_column.loading = False
 
 
 @pn.cache(**CACHE_KWARGS)
@@ -200,7 +200,7 @@ def initialize_widgets():
     )
     return tabulator, download_column, toggle, numbers, svg
 
-
+catalog_repos = [None]
 tabulator, download_column, toggle, numbers, svg = initialize_widgets()
 sidebar_column = pn.Column(
     pn.WidgetBox(
@@ -236,5 +236,5 @@ dashboard = pn.template.FastListTemplate(
     logo="https://github.com/PrefectHQ/prefect/blob/main/docs/img/logos/prefect-logo-mark-solid-white-500.png?raw=true",  # noqa
     favicon="https://www.prefect.io/assets/static/favicon.ce0531f.c41309e9925f6ce1d5a1ff078f9a7f0b.png",
 )
-pn.state.onload(load_data)
+periodic_updates = pn.state.add_periodic_callback(load_data, period=1000)
 dashboard.servable()
