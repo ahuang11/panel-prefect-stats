@@ -1,13 +1,16 @@
-import time
-import httpx
+# import time
+import sys
+import requests
 from bs4 import BeautifulSoup
-from datetime import timedelta
+
+# from datetime import timedelta
 
 import panel as pn
 import pandas as pd
+from bokeh.models.widgets.tables import HTMLTemplateFormatter
 
-from prefect import flow, task
-from prefect.tasks import task_input_hash
+# from prefect import flow, task
+# from prefect.tasks import task_input_hash
 
 CSS = """
     body {
@@ -16,79 +19,126 @@ CSS = """
         margin-left: 20%;
         margin-right: 20%;
     }
+
+    .bk.bk-btn.bk-btn-default {
+        font-size: 105%;
+    }
 """
-MAX_WIDTH = 1500
+MAX_WIDTH = 1000
+DAY_IN_SECONDS = 3600 * 24
+CACHE_KWARGS = dict(ttl=DAY_IN_SECONDS, max_items=1, policy="FIFO")
+COLUMNS = ["📕 Org Repo", "⭐ Stars", "⬇ Downloads", "👀 Watching"]
+if sys.platform != "emscripten":
+    CACHE_KWARGS["to_disk"] = True
+
 pn.extension("tabulator", sizing_mode="stretch_width")
 pn.config.raw_css.append(CSS)
 
 
-@task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
+# @task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
+@pn.cache(**CACHE_KWARGS)
 def parse_catalog():
-    if "catalog" not in pn.state.cache:
-        catalog_resp = httpx.get("https://docs.prefect.io/collections/catalog/")
-        catalog_soup = BeautifulSoup(catalog_resp.text, "html.parser")
-        repo_api_urls = {
-            url["href"]
-            .replace("https://", "https://api.github.com/repos/")
-            .replace(".github.io", "")
-            .rstrip("/")
-            for url in catalog_soup.find_all("a", href=True)
-            if ".io/prefect-" in url["href"]
-        }
-        pn.state.cache["catalog"] = repo_api_urls
-    else:
-        repo_api_urls = pn.state.cache["catalog"]
+    catalog_resp = requests.get("https://docs.prefect.io/collections/catalog/")
+    catalog_soup = BeautifulSoup(catalog_resp.text, "html.parser")
+    repo_api_urls = {
+        url["href"]
+        .replace("https://", "https://api.github.com/repos/")
+        .replace(".github.io", "")
+        .rstrip("/")
+        for url in catalog_soup.find_all("a", href=True)
+        if ".io/prefect-" in url["href"]
+    }
     return repo_api_urls
 
 
-@task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
+# @task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
 def get_stats(repo_api_url):
-    repo_api_data = httpx.get(repo_api_url).json()
+    print(repo_api_url)
+    repo_api_data = requests.get(repo_api_url).json()
     repo_name = repo_api_data["name"]
     repo_full_name = repo_api_data["full_name"]
     repo_stars = repo_api_data["stargazers_count"]
     repo_subscribers = repo_api_data["subscribers_count"]
-    repo_downloads = httpx.get(
+    repo_downloads = requests.get(
         f"https://pypistats.org/api/packages/{repo_name}/recent?period=month"
     ).json()["data"]["last_month"]
+    repo_url = repo_api_data["html_url"]
     repo_df = pd.DataFrame(
         {
-            "org repo": [repo_full_name],
+            "org repo": [f'<a href="{repo_url}" target="_blank">{repo_full_name}</a>'],
             "stars": [repo_stars],
             "downloads": [repo_downloads],
             "subscribers": [repo_subscribers],
-        }
+        },
+        index=[repo_full_name],
     )
-    repo_df.columns = repo_df.columns.str.title()
+    repo_df.columns = COLUMNS
     return repo_df
+
+
+@pn.cache(**CACHE_KWARGS)
+def get_repo_dfs():
+    repo_api_urls = parse_catalog()
+
+    repo_dfs = []
+    for repo_api_url in repo_api_urls:
+        repo_df = get_stats(repo_api_url)
+        repo_dfs.append(repo_df)
+    return repo_dfs
 
 
 def update_table(repo_dfs):
     base_df = tabulator.value
     all_df = pd.concat([base_df.iloc[[0]], *repo_dfs]).sort_values(
-        ["Stars", "Downloads", "Subscribers"], ascending=False
+        COLUMNS[1:], ascending=False
     )
-    all_df.index = list(range(len(all_df)))
     tabulator.value = all_df
-    tabulator.loading = False
-    toggle.disabled = False
 
 
-@flow(persist_result=True)
+# @flow(persist_result=True)
 def load_data():
-    if "data" not in pn.state.cache:
-        repo_api_urls = parse_catalog()
-        repo_dfs = []
-        for repo_api_url in repo_api_urls:
-            repo_name = repo_api_url.split("/")[-1]
-            repo_df = get_stats.with_options(name=repo_name)(repo_api_url)
-            repo_dfs.append(repo_df)
-        pn.state.cache["data"] = repo_dfs
-    else:
-        repo_dfs = pn.state.cache["data"]
+    sidebar_column.loading = True
+    repo_dfs = get_repo_dfs()
     update_table(repo_dfs)
+    sidebar_column.loading = False
 
 
+@pn.cache(**CACHE_KWARGS)
+def get_star_plot(selected_repos, type_):
+    api_url = (
+        f"https://api.star-history.com/svg?repos={selected_repos}&type={type_}"  # noqa
+    )
+    return requests.get(api_url).text.replace(
+        """<svg width="800" xmlns="http://www.w3.org/2000/svg" style="stroke-width: 3; font-family: xkcd; background: white;" height="533.3333333333334" preserveaspectratio="xMidYMid meet">""",  # noqa
+        """<svg xmlns="http://www.w3.org/2000/svg" style="stroke-width: 3; font-family: xkcd; background: white;height:100%;width:100%" viewBox="0 0 800 533" preserveAspectRatio="xMidYMid meet">""",  # noqa
+    )
+
+
+def get_sum(repo_df, selected_index):
+    if not selected_index:
+        selected_index = [0]
+    selected_df = repo_df.iloc[selected_index]
+
+    numbers = pn.Row(
+        pn.Spacer(),
+        *[
+            pn.indicators.Number(
+                name="",
+                value=selected_df[column].sum(),
+                font_size="28pt",
+                format=column[0] + " {value:,d} total",
+                align="center",
+                sizing_mode="stretch_width",
+            )
+            for column in COLUMNS[1:]
+        ],
+        pn.Spacer(),
+        align="center",
+    )
+    return numbers
+
+
+@pn.cache(**CACHE_KWARGS)
 def get_star_history(repo_df, selected_index, by_date):
     if not selected_index:
         selected_index = [0]
@@ -96,37 +146,21 @@ def get_star_history(repo_df, selected_index, by_date):
         if 0 in selected_index:
             selected_index.remove(0)
 
+    selected_repos = ",".join(repo_df.iloc[selected_index].index)
     type_ = "Date" if by_date else "Timeline"
-    selected_repos = ",".join(repo_df.iloc[selected_index]["Org Repo"])
-    api_url = f"https://api.star-history.com/svg?repos={selected_repos}&type={type_}"  # noqa
-    svg_text = httpx.get(api_url).text
+    svg_text = get_star_plot(selected_repos, type_)
     svg = pn.pane.SVG(
         svg_text,
         min_width=1000,
         min_height=1000,
         sizing_mode="scale_both",
-        link_url=api_url
     )
     return svg
 
 
-@flow
+# @flow
 def initialize_widgets():
-    static_text = pn.widgets.StaticText(
-        name="Instructions",
-        value="""
-            Welcome! The app is fetching stats from all publicly
-            available Prefect repositories. Please be patient
-            while it loads as this app is not yet optimized.
-            Upon completion, select desired rows (shift + click) to view the
-            corresponding repos' star histories.
-        """,
-    )
-    toggle = pn.widgets.Toggle(
-        name="By Date 📅", max_width=MAX_WIDTH, align="center", disabled=True
-    )
-
-    repo_df = get_stats.fn("https://api.github.com/repos/prefecthq/prefect")
+    repo_df = get_stats("https://api.github.com/repos/prefecthq/prefect")
     tabulator = pn.widgets.Tabulator(
         repo_df,
         selection=[0],
@@ -135,8 +169,26 @@ def initialize_widgets():
         align="center",
         theme="modern",
         layout="fit_columns",
+        formatters={column: HTMLTemplateFormatter() for column in COLUMNS},
         disabled=True,
-        loading=True,
+    )
+
+    download_column = pn.Row(
+        *tabulator.download_menu(
+            text_kwargs={"name": "📁 Enter filename", "value": "prefect_stats.csv"},
+            button_kwargs={"name": "⬇️ Download table"},
+        )
+    )
+    download_column[1].align = "end"
+
+    toggle = pn.widgets.Toggle(
+        name="📅 Align by date", max_width=MAX_WIDTH, align="center"
+    )
+
+    numbers = pn.bind(
+        get_sum,
+        repo_df=tabulator.param.value,
+        selected_index=tabulator.param.selection,
     )
 
     svg = pn.bind(
@@ -145,18 +197,42 @@ def initialize_widgets():
         selected_index=tabulator.param.selection,
         by_date=toggle.param.value,
     )
-    return static_text, tabulator, toggle, svg
+    return tabulator, download_column, toggle, numbers, svg
 
 
-static_text, tabulator, toggle, svg = initialize_widgets()
-sidebar_column = pn.Column(static_text, tabulator, toggle, sizing_mode="stretch_both")
-dashboard = pn.template.FastGridTemplate(
-    title="Prefect Stats",
-    header_background="#0052FF",
-    sidebar_width=700,
-    sidebar=sidebar_column,
-    logo="https://github.com/PrefectHQ/prefect/blob/main/docs/img/logos/prefect-logo-mark-solid-white-500.png?raw=true",  # noqa
+tabulator, download_column, toggle, numbers, svg = initialize_widgets()
+sidebar_column = pn.Column(
+    pn.WidgetBox("""
+    # 👋 Welcome!
+
+    The app is fetching stats from all publicly available Prefect repositories listed on the
+    Prefect Collections Catalog.
+
+    Upon completion, select desired rows (shift + click) to view the
+    corresponding repos' star histories. To visit the GitHub repo,
+    click on the name.
+    """
+    ),
+    tabulator,
+    download_column,
+    toggle,
+    sizing_mode="stretch_both",
 )
-dashboard.main[0:8, :] = svg
+
+main_column = pn.Column(
+    numbers,
+    svg,
+    sizing_mode="stretch_both",
+)
+
+dashboard = pn.template.FastListTemplate(
+    title="Prefect GitHub Numbers",
+    header_background="#0052FF",
+    sidebar_width=MAX_WIDTH,
+    sidebar=sidebar_column,
+    main=main_column,
+    logo="https://github.com/PrefectHQ/prefect/blob/main/docs/img/logos/prefect-logo-mark-solid-white-500.png?raw=true",  # noqa
+    favicon="https://www.prefect.io/assets/static/favicon.ce0531f.c41309e9925f6ce1d5a1ff078f9a7f0b.png",
+)
 pn.state.onload(load_data)
 dashboard.servable()
