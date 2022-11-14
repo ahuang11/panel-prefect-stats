@@ -5,7 +5,6 @@ import pandas as pd
 import panel as pn
 import requests
 from bokeh.models.widgets.tables import HTMLTemplateFormatter
-from bs4 import BeautifulSoup
 
 # from datetime import timedelta
 
@@ -39,16 +38,16 @@ pn.config.raw_css.append(CSS)
 # @task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
 @pn.cache(**CACHE_KWARGS)
 def parse_catalog():
-    catalog_resp = requests.get("https://docs.prefect.io/collections/catalog/")
-    catalog_soup = BeautifulSoup(catalog_resp.text, "html.parser")
-    repo_api_urls = sorted({
-        url["href"]
-        .replace("https://", "https://api.github.com/repos/")
-        .replace(".github.io", "")
-        .rstrip("/")
-        for url in catalog_soup.find_all("a", href=True)
-        if ".io/prefect-" in url["href"]
-    })
+    # catalog_resp = requests.get("https://docs.prefect.io/collections/catalog/")
+    # repo_api_urls = sorted({
+    #     url.split('"')[1]
+    #     .replace("https://", "https://api.github.com/repos/")
+    #     .replace(".github.io", "")
+    #     .rstrip("/")
+    #     for url in catalog_resp.text.split("<a href=")
+    #     if ".io/prefect-" in url
+    # })
+    repo_api_urls = ['https://api.github.com/repos/alessandrolollo/prefect-cubejs', 'https://api.github.com/repos/alessandrolollo/prefect-metricflow', 'https://api.github.com/repos/alessandrolollo/prefect-stitch', 'https://api.github.com/repos/alessandrolollo/prefect-transform', 'https://api.github.com/repos/fivetran/prefect-fivetran', 'https://api.github.com/repos/fugue-project/prefect-fugue', 'https://api.github.com/repos/khuyentran1401/prefect-alert', 'https://api.github.com/repos/madkinsz/prefect-kv', 'https://api.github.com/repos/prefecthq/prefect-airbyte', 'https://api.github.com/repos/prefecthq/prefect-aws', 'https://api.github.com/repos/prefecthq/prefect-azure', 'https://api.github.com/repos/prefecthq/prefect-census', 'https://api.github.com/repos/prefecthq/prefect-dask', 'https://api.github.com/repos/prefecthq/prefect-databricks', 'https://api.github.com/repos/prefecthq/prefect-dbt', 'https://api.github.com/repos/prefecthq/prefect-docker', 'https://api.github.com/repos/prefecthq/prefect-email', 'https://api.github.com/repos/prefecthq/prefect-firebolt', 'https://api.github.com/repos/prefecthq/prefect-gcp', 'https://api.github.com/repos/prefecthq/prefect-github', 'https://api.github.com/repos/prefecthq/prefect-gitlab', 'https://api.github.com/repos/prefecthq/prefect-great-expectations', 'https://api.github.com/repos/prefecthq/prefect-hex', 'https://api.github.com/repos/prefecthq/prefect-hightouch', 'https://api.github.com/repos/prefecthq/prefect-jupyter', 'https://api.github.com/repos/prefecthq/prefect-monday', 'https://api.github.com/repos/prefecthq/prefect-monte-carlo', 'https://api.github.com/repos/prefecthq/prefect-openmetadata', 'https://api.github.com/repos/prefecthq/prefect-ray', 'https://api.github.com/repos/prefecthq/prefect-shell', 'https://api.github.com/repos/prefecthq/prefect-slack', 'https://api.github.com/repos/prefecthq/prefect-snowflake', 'https://api.github.com/repos/prefecthq/prefect-sqlalchemy', 'https://api.github.com/repos/prefecthq/prefect-twitter', 'https://api.github.com/repos/sodadata/prefect-soda-core']  # noqa
     return repo_api_urls
 
 
@@ -61,9 +60,10 @@ def get_stats(repo_api_url):
     repo_full_name = repo_api_data["full_name"]
     repo_stars = repo_api_data["stargazers_count"]
     repo_subscribers = repo_api_data["subscribers_count"]
-    repo_downloads = requests.get(
-        f"https://pypistats.org/api/packages/{repo_name}/recent?period=month"
-    ).json()["data"]["last_month"]
+    # repo_downloads = requests.get(
+    #     f"https://pypistats.org/api/packages/{repo_name}/recent?period=month"
+    # ).json()["data"]["last_month"]
+    repo_downloads = None
     repo_url = repo_api_data["html_url"]
     repo_df = pd.DataFrame(
         {
@@ -88,20 +88,20 @@ def update_table(repo_df):
 
 # @flow(persist_result=True)
 def load_data():
-    sidebar_column.loading = True
-    try:
-        if catalog_repos[0] is None:
-            catalog_repos.pop(-1)
-            catalog_repos.extend(sorted(parse_catalog()))
+    # sidebar_column.loading = True
+    # try:
+    if catalog_repos[0] is None:
+        catalog_repos.pop(-1)
+        catalog_repos.extend(sorted(parse_catalog()))
 
-        if len(catalog_repos) > 0:
-            repo_api_url = catalog_repos.pop(-1)
-            repo_df = get_stats(repo_api_url)
-            update_table(repo_df)
-        else:
-            periodic_updates.stop()
-    finally:
-        sidebar_column.loading = False
+    if len(catalog_repos) > 0:
+        repo_api_url = catalog_repos.pop(-1)
+        repo_df = get_stats(repo_api_url)
+        update_table(repo_df)
+    else:
+        periodic_updates.stop()
+    # finally:
+        # sidebar_column.loading = False
 
 
 @pn.cache(**CACHE_KWARGS)
@@ -236,5 +236,7 @@ dashboard = pn.template.FastListTemplate(
     logo="https://github.com/PrefectHQ/prefect/blob/main/docs/img/logos/prefect-logo-mark-solid-white-500.png?raw=true",  # noqa
     favicon="https://www.prefect.io/assets/static/favicon.ce0531f.c41309e9925f6ce1d5a1ff078f9a7f0b.png",
 )
-periodic_updates = pn.state.add_periodic_callback(load_data, period=1000)
+while catalog_repos:
+    load_data()
+# periodic_updates = pn.state.add_periodic_callback(load_data, period=5000)
 dashboard.servable()
