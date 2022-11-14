@@ -24,10 +24,10 @@ CSS = """
         font-size: 105%;
     }
 """
-MAX_WIDTH = 1000
+MAX_WIDTH = 550
 DAY_IN_SECONDS = 3600 * 24
 CACHE_KWARGS = dict(ttl=DAY_IN_SECONDS, policy="FIFO")
-COLUMNS = ["📕 Org Repo", "⭐ Stars", "⬇ Downloads", "👀 Watching"]
+COLUMNS = ["📕 Name", "⭐ Stars", "⬇ Downloads", "👀 Watching"]
 if sys.platform != "emscripten":
     CACHE_KWARGS["to_disk"] = True
 
@@ -52,7 +52,7 @@ def parse_catalog():
 
 
 # @task(cache_key_fn=task_input_hash, retries=3, cache_expiration=timedelta(days=1))
-@pn.cache(**CACHE_KWARGS)
+# @pn.cache(**CACHE_KWARGS)
 def get_stats(repo_api_url):
     print(repo_api_url)
     repo_api_data = requests.get(repo_api_url).json()
@@ -67,7 +67,7 @@ def get_stats(repo_api_url):
     repo_url = repo_api_data["html_url"]
     repo_df = pd.DataFrame(
         {
-            "org repo": [f'<a href="{repo_url}" target="_blank">{repo_full_name}</a>'],
+            "org repo": [f'<a href="{repo_url}" target="_blank">{repo_full_name.split("/")[-1]}</a>'],
             "stars": [repo_stars],
             "downloads": [repo_downloads],
             "subscribers": [repo_subscribers],
